@@ -1,0 +1,30 @@
+# SBT
+target/
+project/project/
+project/target/
+lib_managed/
+src_managed/
+.scala-build/
+coursier/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Cache
+.cache/
+*.cache
+
+# Temporary files
+*.tmp
+*.temp
