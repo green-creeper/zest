@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.4.1"
-ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / version := "0.1.0"
 ThisBuild / organization := "com.greencreeper"
 ThisBuild / organizationName := "greencreeper"
 
@@ -12,9 +12,15 @@ lazy val root = (project in file("."))
       "org.typelevel" %% "cats-parse" % "1.0.0",
       "co.fs2" %% "fs2-core" % "3.9.3",
       "co.fs2" %% "fs2-io" % "3.9.3",
-      "com.lihaoyi" %% "os-lib" % "0.9.1", // Added for temporary file creation in tests
+      "com.lihaoyi" %% "os-lib" % "0.9.1",
       "org.scalameta" %% "munit" % "1.0.0-M10" % Test,
       "org.typelevel" %% "munit-cats-effect" % "2.0.0-M4" % Test,
       "org.scalacheck" %% "scalacheck" % "1.17.0" % Test
     )
+  )
+
+lazy val examples = (project in file("examples"))
+  .dependsOn(root)
+  .settings(
+    name := "zest-examples"
   )

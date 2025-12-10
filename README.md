@@ -2,34 +2,30 @@
 
 A minimal, idiomatic Scala 3 templating engine designed for simple string substitutions in various output formats like HTML, shell scripts, or plain text. It allows binding a Scala object (or a `Map`) to a template and using its fields with a `{{object.value}}` syntax.
 
+This version is implemented using a **tagless final** approach, allowing it to be used with any effect type that has a `cats.effect.Sync` instance (e.g., `cats.effect.IO`, `monix.eval.Task`).
+
 ## Features
 
+*   **Tagless Final:** Flexible and non-blocking, works with any effect type `F[_]`.
 *   **Simple Syntax:** Uses `{{object.value}}` for placeholder substitution.
 *   **Object Binding:** Binds directly to Scala case classes or `Map[String, Any]` instances.
 *   **Nested Access:** Supports accessing nested fields (e.g., `{{user.address.street}}`).
 *   **File-based Templates:** Templates are loaded from external files.
-*   **Basic Error Handling:** Provides informative error messages for missing fields or null values during path traversal.
+*   **Error Handling:** Fails fast on missing fields by raising an error in `F`.
 
 ## Setup
 
-To include this templating engine in your Scala 3 project, add the following dependency to your `build.sbt` file:
+To use this library in your project, add the JitPack resolver and the library dependency to your `build.sbt` file:
 
 ```scala
-// Assuming you have a project named 'zest' and it's organized under 'com.greencreeper'
-// You might need to publish this as a local library or a proper artifact for wider use.
-// For now, if within the same project, you can use the source directly.
+resolvers += "jitpack" at "https://jitpack.io"
 
-// Example build.sbt snippet:
-// ThisBuild / organization := "com.greencreeper"
-// ThisBuild / scalaVersion := "3.4.1"
-// ...
-// libraryDependencies += "com.greencreeper" %% "zest-template" % "0.1.0-SNAPSHOT" // If published
+libraryDependencies += "com.github.YourUsername:YourRepoName" % "0.1.0"
 ```
-Since this is a self-contained example within a single project, you just need the source files (`src/main/scala/com/greencreeper/zest/template/Template.scala`).
 
 ## Usage
 
-Here's how to use the templating engine:
+Here's how to use the templating engine with `cats.effect.IO`.
 
 ### 1. Define your data models
 
@@ -48,69 +44,66 @@ Create a template file (e.g., `user_profile.html`):
 <p>Name: {{user.name}}</p>
 <p>Age: {{user.age}}</p>
 <p>Address: {{user.address.street}}, {{user.address.city}}</p>
-<p>Favorite Color: {{user.favoriteColor}}</p>
 ```
 
 ### 3. Render the template
 
 ```scala
+import cats.effect.{IO, IOApp}
 import com.greencreeper.zest.template.Template
 import java.io.File
-import os.Path // Assuming os-lib is available for file operations
 
-object ExampleUsage extends App {
+object ExampleUsage extends IOApp.Simple {
+
   case class User(name: String, age: Int, address: Address)
   case class Address(street: String, city: String)
 
-  val templateContent = """
-    |<h1>User Profile</h1>
-    |<p>Name: {{user.name}}</p>
-    |<p>Age: {{user.age}}</p>
-    |<p>Address: {{user.address.street}}, {{user.address.city}}</p>
-    |<p>Favorite Color: {{user.favoriteColor}}</p>
-  """.stripMargin
+  def run: IO[Unit] = {
+    val templateContent =
+      """
+        |<h1>User Profile</h1>
+        |<p>Name: {{user.name}}</p>
+        |<p>Age: {{user.age}}</p>
+        |<p>Address: {{user.address.street}}, {{user.address.city}}</p>
+      """.stripMargin
 
-  // Create a temporary template file for demonstration
-  val tempFile = File.createTempFile("user_profile_template", ".html")
-  var missingFieldTempFile: File = null
+    val tempFileResource = IO.delay(File.createTempFile("user_profile_template", ".html")).bracket { file =>
+      IO.delay(os.write.over(os.Path(file.getAbsolutePath), templateContent)).as(file)
+    } { file =>
+      IO.delay(file.delete()).void
+    }
 
-  try {
-    os.write.over(os.Path(tempFile.getAbsolutePath), templateContent)
+    tempFileResource.use { tempFile =>
+      val alice = User("Alice Wonderland", 30, Address("Rabbit Hole", "Fantasy Land"))
+      val context = Map("user" -> alice)
 
-    val alice = User("Alice Wonderland", 30, Address("Rabbit Hole", "Fantasy Land"))
-    val context = Map("user" -> alice) // Context can be a Map or a case class instance directly
-
-    val template = Template.fromFile(tempFile.getAbsolutePath)
-    val renderedHtml = template.render(context)
-
-    println("--- Rendered HTML ---")
-    println(renderedHtml)
-
-    // Demonstrate missing field handling
-    val missingFieldTemplateContent = "Hello, {{user.nonExistent}}!"
-    missingFieldTempFile = File.createTempFile("missing_field_template", ".txt")
-    os.write.over(os.Path(missingFieldTempFile.getAbsolutePath), missingFieldTemplateContent)
-    val missingFieldTemplate = Template.fromFile(missingFieldTempFile.getAbsolutePath)
-    println("\n--- Demonstrating missing field handling ---")
-    println(missingFieldTemplate.render(context))
-
-  } finally {
-    if (tempFile.exists()) tempFile.delete()
-    if (missingFieldTempFile != null && missingFieldTempFile.exists()) missingFieldTempFile.delete()
+      for {
+        template <- Template.fromFile[IO](tempFile.getAbsolutePath)
+        renderedHtml <- template.render(context)
+        _ <- IO.println(renderedHtml)
+      } yield ()
+    }
   }
 }
 ```
 
-This will output:
+### Error Handling
 
-```html
---- Rendered HTML ---
-<h1>User Profile</h1>
-<p>Name: Alice Wonderland</p>
-<p>Age: 30</p>
-<p>Address: Rabbit Hole, Fantasy Land</p>
-<p>Favorite Color: ERROR: Field or method 'favoriteColor' not found in com.greencreeper.zest.ExampleUsage$User</p>
+If a field is missing in the context, the `render` method will return a failed `F`. You can handle this using standard error handling methods for your chosen effect type.
 
---- Demonstrating missing field handling ---
-Hello, ERROR: Field or method 'nonExistent' not found in com.greencreeper.zest.ExampleUsage$User!
+```scala
+import cats.effect.IO
+import com.greencreeper.zest.template.Template
+
+val template = Template.fromFile[IO]("path/to/template.txt")
+val context = Map("user" -> "Alice") // Missing 'user.name'
+
+template.flatMap(_.render(context)).attempt.map {
+  case Left(e) => IO.println(s"Rendering failed: ${e.getMessage}")
+  case Right(rendered) => IO.println(rendered)
+}
 ```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

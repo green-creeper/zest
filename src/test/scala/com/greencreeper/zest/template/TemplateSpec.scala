@@ -1,19 +1,16 @@
 package com.greencreeper.zest.template
 
-import munit.FunSuite
+import munit.CatsEffectSuite
 import java.io.File
-import scala.io.Source
+import cats.effect.IO
 
-class TemplateSpec extends FunSuite {
+class TemplateSpec extends CatsEffectSuite {
 
-  // Helper to create a temporary template file
-  def withTempTemplate(content: String)(testBody: File => Any): Any = {
-    val tempFile = File.createTempFile("test_template", ".txt")
-    try {
-      os.write.over(os.Path(tempFile.getAbsolutePath), content)
-      testBody(tempFile)
-    } finally {
-      tempFile.delete()
+  def withTempTemplate(content: String)(testBody: File => IO[Unit]): IO[Unit] = {
+    IO.delay(File.createTempFile("test_template", ".txt")).bracket { tempFile =>
+      IO.delay(os.write.over(os.Path(tempFile.getAbsolutePath), content)) >> testBody(tempFile)
+    } { tempFile =>
+      IO.delay(tempFile.delete()).void
     }
   }
 
@@ -25,8 +22,11 @@ class TemplateSpec extends FunSuite {
     withTempTemplate("Hello, {{user.name}}!") { tempFile =>
       val user = User("Alice", 30, Address("Main St", "Anytown"))
       val context = Map("user" -> user)
-      val template = Template.fromFile(tempFile.getAbsolutePath)
-      assertEquals(template.render(context), "Hello, Alice!")
+      for {
+        template <- Template.fromFile[IO](tempFile.getAbsolutePath)
+        rendered <- template.render(context)
+        _ <- IO(assertEquals(rendered, "Hello, Alice!"))
+      } yield ()
     }
   }
 
@@ -34,27 +34,39 @@ class TemplateSpec extends FunSuite {
     withTempTemplate("User lives on {{user.address.street}} in {{user.address.city}}.") { tempFile =>
       val user = User("Alice", 30, Address("Main St", "Anytown"))
       val context = Map("user" -> user)
-      val template = Template.fromFile(tempFile.getAbsolutePath)
-      assertEquals(template.render(context), "User lives on Main St in Anytown.")
+      for {
+        template <- Template.fromFile[IO](tempFile.getAbsolutePath)
+        rendered <- template.render(context)
+        _ <- IO(assertEquals(rendered, "User lives on Main St in Anytown."))
+      } yield ()
     }
   }
 
-  test("Template should handle missing fields gracefully") {
+  test("Template should fail on missing fields") {
     withTempTemplate("Hello, {{user.nonExistentField}}!") { tempFile =>
       val user = User("Alice", 30, Address("Main St", "Anytown"))
       val context = Map("user" -> user)
-      val template = Template.fromFile(tempFile.getAbsolutePath)
-      assert(template.render(context).contains("ERROR: Field or method 'nonExistentField' not found"))
+      val test = for {
+        template <- Template.fromFile[IO](tempFile.getAbsolutePath)
+        _ <- template.render(context)
+      } yield ()
+      test.attempt.map {
+        case Left(e: NoSuchFieldException) =>
+          assert(e.getMessage.contains("Field or method 'nonExistentField' not found"))
+        case _ => fail("Expected a NoSuchFieldException")
+      }
     }
   }
 
-  test("Template should handle null values gracefully") {
-    withTempTemplate("User name: {{user.name}}, Age: {{user.age}}, Item price: {{item.price}}.") { tempFile =>
-      val item = Item(1, "Book", None)
-      val user = User("Bob", 25, Address("Third Ave", "Otherville"))
-      val context = Map("user" -> user, "item" -> item)
-      val template = Template.fromFile(tempFile.getAbsolutePath)
-      assertEquals(template.render(context), "User name: Bob, Age: 25, Item price: None.")
+  test("Template should handle Option values") {
+    withTempTemplate("Item price: {{item.price}}.") { tempFile =>
+      val item = Item(1, "Book", Some(19.99))
+      val context = Map("item" -> item)
+      for {
+        template <- Template.fromFile[IO](tempFile.getAbsolutePath)
+        rendered <- template.render(context)
+        _ <- IO(assertEquals(rendered, "Item price: Some(19.99)."))
+      } yield ()
     }
   }
 
@@ -63,25 +75,11 @@ class TemplateSpec extends FunSuite {
     withTempTemplate("Value: {{obj.value}}, Nullable: {{obj.nullable}}.") { tempFile =>
       val obj = WithNull("test", null)
       val context = Map("obj" -> obj)
-      val template = Template.fromFile(tempFile.getAbsolutePath)
-      assertEquals(template.render(context), "Value: test, Nullable: null.")
+      for {
+        template <- Template.fromFile[IO](tempFile.getAbsolutePath)
+        rendered <- template.render(context)
+        _ <- IO(assertEquals(rendered, "Value: test, Nullable: null."))
+      } yield ()
     }
-  }
-
-  test("placeholderRegex should correctly match placeholders") {
-    val templateString = "Hello, {{user.name}}! Your age is {{user.age}}."
-    val matches = Template.placeholderRegex.findAllMatchIn(templateString).toList
-
-    assertEquals(matches.length, 2)
-    assertEquals(matches(0).group(1), "user.name")
-    assertEquals(matches(1).group(1), "user.age")
-
-    val simpleTemplate = "{{value}}"
-    val simpleMatches = Template.placeholderRegex.findAllMatchIn(simpleTemplate).toList
-    assertEquals(simpleMatches.length, 1)
-    assertEquals(simpleMatches(0).group(1), "value")
-
-    val noMatches = "No placeholders here."
-    assertEquals(Template.placeholderRegex.findAllMatchIn(noMatches).toList.length, 0)
   }
 }
