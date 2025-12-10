@@ -18,6 +18,11 @@ object Template {
     Sync[F].delay {
       new FileTemplate[F](filePath)
     }
+
+  def fromString[F[_]](templateContent: String)(using Sync[F]): F[Template[F]] =
+    Sync[F].delay {
+      new StringTemplate[F](templateContent)
+    }
 }
 
 // Define the ADT for parsed template parts
@@ -123,4 +128,64 @@ class FileTemplate[F[_]](filePath: String)(using Sync[F]) extends Template[F] {
     go(context, parts).map(result => Option(result).map(_.toString).getOrElse("null"))
   }
 
+}
+
+class StringTemplate[F[_]](templateContent: String)(using Sync[F]) extends Template[F] {
+  private val F_instance = summon[Sync[F]]
+
+  private val parsedTemplate: F[List[TemplatePart]] = F_instance.delay {
+    TemplateParser.template.parseAll(templateContent) match {
+      case Right(parts) => parts
+      case Left(error) => throw new IllegalArgumentException(s"Failed to parse template: $error")
+    }
+  }
+
+  override def render(context: Any): F[String] =
+    parsedTemplate.flatMap { parts =>
+      parts.traverse {
+        case RawText(text) => F_instance.pure(text)
+        case Placeholder(path) => evaluatePath(context, path)
+      }.map(_.mkString)
+    }
+
+  private def evaluatePath(context: Any, path: String): F[String] = F_instance.defer {
+    val parts = path.split('.').toList
+
+    def go(current: Any, pathParts: List[String]): F[Any] =
+      pathParts match {
+        case Nil => F_instance.pure(current)
+        case part :: tail =>
+          val baseValue = current match {
+            case Some(value) => value
+            case _           => current
+          }
+
+          if (baseValue == null) {
+            F_instance.raiseError(new NullPointerException(s"Null value encountered at part '$part' in path '$path'"))
+          } else {
+            val nextValueF = baseValue match {
+              case map: Map[String, Any] @unchecked =>
+                map.get(part) match {
+                  case Some(value) => F_instance.pure(value)
+                  case None => F_instance.raiseError(new NoSuchFieldException(s"Field '$part' not found in map for path '$path'"))
+                }
+              case _ =>
+                F_instance.delay {
+                  val clazz = baseValue.getClass
+                  scala.util.Try(clazz.getMethod(part))
+                    .map(_.invoke(baseValue))
+                    .orElse(scala.util.Try(clazz.getDeclaredField(part)).map { field =>
+                      field.setAccessible(true)
+                      field.get(baseValue)
+                    })
+                    .toEither
+                    .leftMap(_ => new NoSuchFieldException(s"Field or method '$part' not found in ${clazz.getName}"))
+                }.rethrow
+            }
+            nextValueF.flatMap(nextValue => go(nextValue, tail))
+          }
+      }
+
+    go(context, parts).map(result => Option(result).map(_.toString).getOrElse("null"))
+  }
 }

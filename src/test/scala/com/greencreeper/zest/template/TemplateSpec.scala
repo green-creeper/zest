@@ -58,6 +58,18 @@ class TemplateSpec extends CatsEffectSuite {
     }
   }
 
+  test("Template.fromString should render basic string substitution") {
+    val templateContent = "Hello, {{user.name}}!"
+    val user = User("Alice", 30, Address("Main St", "Anytown"))
+    val context = Map("user" -> user)
+    for {
+      template <- Template.fromString[IO](templateContent)
+      rendered <- template.render(context)
+      _ <- IO(assertEquals(rendered, "Hello, Alice!"))
+    } yield ()
+  }
+
+
   test("Template should handle Option values") {
     withTempTemplate("Item price: {{item.price}}.") { tempFile =>
       val item = Item(1, "Book", Some(19.99))
