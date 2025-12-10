@@ -1,19 +1,20 @@
 package com.greencreeper.zest.template
 
-import cats.implicits._
+import cats.implicits.*
 import cats.effect.Sync
 import java.io.File
 import scala.reflect.ClassTag
 import cats.parse.{Parser, Parser0}
-import cats.parse.Parser._
-import cats.parse.Parser0._
+import cats.parse.Parser.*
+import cats.parse.Parser0.*
+import cats.parse.Accumulator0.*
 
 trait Template[F[_]] {
   def render(context: Any): F[String]
 }
 
 object Template {
-  def fromFile[F[_]: Sync](filePath: String): F[Template[F]] =
+  def fromFile[F[_]](filePath: String)(using Sync[F]): F[Template[F]] =
     Sync[F].delay {
       new FileTemplate[F](filePath)
     }
@@ -42,34 +43,29 @@ object TemplateParser {
     (open.void *> whitespace *> pathParser <* whitespace <* close.void).map(Placeholder.apply)
   }
 
-  // rawText should be Parser0[RawText] (can parse empty string)
-  private val rawText: Parser0[RawText] = {
-    Parser.repUntil0(Parser.anyChar, Parser.string("{{").peek)
+  // rawText MUST be a Parser[RawText], meaning it consumes AT LEAST ONE character.
+  // This will prevent it from producing RawText("").
+  private val rawText: Parser[RawText] = {
+    Parser.until(Parser.string("{{"))
       .string
       .map(RawText.apply)
+      .orElse(Parser.anyChar.rep(1).string.map(RawText.apply)) // If no '{{', consume remaining as raw text
+      .backtrack
   }
 
-  // templatePart must be Parser0[TemplatePart] so its rep0 method can be called
-  private val templatePart: Parser0[TemplatePart] =
-    // Lift placeholder to Parser0[TemplatePart] then orElse with rawText
+  // Now templatePart can be a Parser[TemplatePart] because both branches are Parsers
+  private val templatePart: Parser[TemplatePart] =
     placeholder.map(identity[TemplatePart]).orElse(rawText.map(identity[TemplatePart]))
 
   // The main template parser, which produces a list of template parts
-  // Use templatePart.rep0 directly. This requires templatePart to be Parser0.
-  val template: Parser0[List[TemplatePart]] = {
-    // This will parse one or more templateParts
-    val oneOrMoreParts: Parser[List[TemplatePart]] = Parser.rep(templatePart).map(_.toList)
-
-    // Now make it parse zero or more
-    oneOrMoreParts.orElse(Parser.pure(List.empty[TemplatePart]))
-      .map(_.filterNot(_ == RawText(""))) // Filter out empty RawText objects
-  }
+  val template: Parser0[List[TemplatePart]] =
+    Parser.repAs0(templatePart)(listAccumulator0).map(_.toList).map(_.filterNot(_ == RawText("")))
 } // Closing brace for object TemplateParser
 
-class FileTemplate[F[_]: Sync](filePath: String) extends Template[F] {
-  private val F = Sync[F]
+class FileTemplate[F[_]](filePath: String)(using Sync[F]) extends Template[F] {
+  private val F_instance = summon[Sync[F]] // Use a local val for the Sync instance
 
-  private val parsedTemplate: F[List[TemplatePart]] = F.delay {
+  private val parsedTemplate: F[List[TemplatePart]] = F_instance.delay { // Use F_instance.delay
     val source = scala.io.Source.fromFile(new File(filePath))
     val content = try source.mkString finally source.close()
     TemplateParser.template.parseAll(content) match {
@@ -81,17 +77,17 @@ class FileTemplate[F[_]: Sync](filePath: String) extends Template[F] {
   override def render(context: Any): F[String] =
     parsedTemplate.flatMap { parts =>
       parts.traverse {
-        case RawText(text) => text.pure[F]
+        case RawText(text) => F_instance.pure(text)
         case Placeholder(path) => evaluatePath(context, path)
       }.map(_.mkString)
     }
 
-  private def evaluatePath(context: Any, path: String): F[String] = F.defer {
+  private def evaluatePath(context: Any, path: String): F[String] = F_instance.defer {
     val parts = path.split('.').toList
 
     def go(current: Any, pathParts: List[String]): F[Any] =
       pathParts match {
-        case Nil => current.pure[F]
+        case Nil => F_instance.pure(current)
         case part :: tail =>
           val baseValue = current match {
             case Some(value) => value
@@ -99,20 +95,20 @@ class FileTemplate[F[_]: Sync](filePath: String) extends Template[F] {
           }
 
           if (baseValue == null) {
-            F.raiseError(new NullPointerException(s"Null value encountered at part '$part' in path '$path'"))
+            F_instance.raiseError(new NullPointerException(s"Null value encountered at part '$part' in path '$path'"))
           } else {
             val nextValueF = baseValue match {
               case map: Map[String, Any] @unchecked =>
                 map.get(part) match {
-                  case Some(value) => value.pure[F]
-                  case None => F.raiseError(new NoSuchFieldException(s"Field '$part' not found in map for path '$path'"))
+                  case Some(value) => F_instance.pure(value)
+                  case None => F_instance.raiseError(new NoSuchFieldException(s"Field '$part' not found in map for path '$path'"))
                 }
               case _ =>
-                F.delay {
+                F_instance.delay {
                   val clazz = baseValue.getClass
-                  Try(clazz.getMethod(part))
+                  scala.util.Try(clazz.getMethod(part))
                     .map(_.invoke(baseValue))
-                    .orElse(Try(clazz.getDeclaredField(part)).map { field =>
+                    .orElse(scala.util.Try(clazz.getDeclaredField(part)).map { field =>
                       field.setAccessible(true)
                       field.get(baseValue)
                     })
@@ -127,5 +123,4 @@ class FileTemplate[F[_]: Sync](filePath: String) extends Template[F] {
     go(context, parts).map(result => Option(result).map(_.toString).getOrElse("null"))
   }
 
-  private def Try[A](block: => A): scala.util.Try[A] = scala.util.Try(block)
 }

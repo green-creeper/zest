@@ -15,12 +15,10 @@ This version is implemented using a **tagless final** approach, allowing it to b
 
 ## Setup
 
-To use this library in your project, add the JitPack resolver and the library dependency to your `build.sbt` file:
+To use this library in your project, add the library dependency to your `build.sbt` file:
 
 ```scala
-resolvers += "jitpack" at "https://jitpack.io"
-
-libraryDependencies += "com.github.YourUsername:YourRepoName" % "0.1.0"
+libraryDependencies += "com.greencreeper" %% "zest" % "0.1.0"
 ```
 
 ## Usage
