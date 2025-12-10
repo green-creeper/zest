@@ -20,7 +20,7 @@ To use this library in your project, add the JitPack resolver and the library de
 ```scala
 resolvers += "jitpack" at "https://jitpack.io"
 
-libraryDependencies += "com.github.YourUsername:YourRepoName" % "1.0.0"
+libraryDependencies += "com.github.YourUsername:YourRepoName" % "0.1.0"
 ```
 
 ## Usage
