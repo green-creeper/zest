@@ -3,8 +3,10 @@ package com.greencreeper.zest.template
 import cats.implicits._
 import cats.effect.Sync
 import java.io.File
-import scala.util.matching.Regex
 import scala.reflect.ClassTag
+import cats.parse.{Parser, Parser0}
+import cats.parse.Parser._
+import cats.parse.Parser0._
 
 trait Template[F[_]] {
   def render(context: Any): F[String]
@@ -15,32 +17,73 @@ object Template {
     Sync[F].delay {
       new FileTemplate[F](filePath)
     }
-
-  val placeholderRegex: Regex = "\\{\\{([a-zA-Z0-9_\\.]+)\\}\\}".r
 }
+
+// Define the ADT for parsed template parts
+sealed trait TemplatePart
+final case class RawText(text: String) extends TemplatePart
+final case class Placeholder(path: String) extends TemplatePart
+
+// Define the parser using cats-parse
+object TemplateParser {
+  // Parser for an identifier part (alphanumeric and underscore)
+  private val identifierPart = Parser.charsWhile(c => c.isLetterOrDigit || c == '_')
+
+  // Parser for a path (e.g., "user.name.address")
+  private val pathParser = identifierPart.repSep(1, Parser.char('.')).map(_.toList.mkString("."))
+
+  // Parser for optional whitespace
+  private val whitespace: Parser0[Unit] = Parser.charsWhile0(_.isWhitespace).void
+
+  // Parser for a placeholder, e.g., {{ user.name }}
+  val placeholder: Parser[Placeholder] = {
+    val open = Parser.string("{{")
+    val close = Parser.string("}}")
+    (open.void *> whitespace *> pathParser <* whitespace <* close.void).map(Placeholder.apply)
+  }
+
+  // rawText should be Parser0[RawText] (can parse empty string)
+  private val rawText: Parser0[RawText] = {
+    Parser.repUntil0(Parser.anyChar, Parser.string("{{").peek)
+      .string
+      .map(RawText.apply)
+  }
+
+  // templatePart must be Parser0[TemplatePart] so its rep0 method can be called
+  private val templatePart: Parser0[TemplatePart] =
+    // Lift placeholder to Parser0[TemplatePart] then orElse with rawText
+    placeholder.map(identity[TemplatePart]).orElse(rawText.map(identity[TemplatePart]))
+
+  // The main template parser, which produces a list of template parts
+  // Use templatePart.rep0 directly. This requires templatePart to be Parser0.
+  val template: Parser0[List[TemplatePart]] = {
+    // This will parse one or more templateParts
+    val oneOrMoreParts: Parser[List[TemplatePart]] = Parser.rep(templatePart).map(_.toList)
+
+    // Now make it parse zero or more
+    oneOrMoreParts.orElse(Parser.pure(List.empty[TemplatePart]))
+      .map(_.filterNot(_ == RawText(""))) // Filter out empty RawText objects
+  }
+} // Closing brace for object TemplateParser
 
 class FileTemplate[F[_]: Sync](filePath: String) extends Template[F] {
   private val F = Sync[F]
 
-  private val templateContent: F[String] = F.delay {
+  private val parsedTemplate: F[List[TemplatePart]] = F.delay {
     val source = scala.io.Source.fromFile(new File(filePath))
-    try source.mkString
-    finally source.close()
+    val content = try source.mkString finally source.close()
+    TemplateParser.template.parseAll(content) match {
+      case Right(parts) => parts
+      case Left(error)  => throw new IllegalArgumentException(s"Failed to parse template: $error")
+    }
   }
 
   override def render(context: Any): F[String] =
-    templateContent.flatMap { content =>
-      val matches = Template.placeholderRegex.findAllMatchIn(content).toList
-      val replacements = matches.traverse { m =>
-        val path = m.group(1)
-        evaluatePath(context, path).map(replacement => (m.matched, replacement))
-      }
-
-      replacements.map { reps =>
-        reps.foldLeft(content) { case (current, (placeholder, value)) =>
-          current.replace(placeholder, value)
-        }
-      }
+    parsedTemplate.flatMap { parts =>
+      parts.traverse {
+        case RawText(text) => text.pure[F]
+        case Placeholder(path) => evaluatePath(context, path)
+      }.map(_.mkString)
     }
 
   private def evaluatePath(context: Any, path: String): F[String] = F.defer {
