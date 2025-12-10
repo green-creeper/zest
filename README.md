@@ -21,7 +21,7 @@ To use this library in your project, add the JitPack repository and the library 
 // build.sbt
 resolvers += "jitpack" at "https://jitpack.io"
 
-libraryDependencies += "com.github.green-creeper" %% "zest" % "0.1.0"
+libraryDependencies += "com.github.green-creeper" % "zest" % "0.1.0"
 ```
 
 ## Usage
